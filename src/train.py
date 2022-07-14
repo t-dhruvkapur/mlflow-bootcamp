@@ -237,7 +237,7 @@ mlflow.log_artifact("model.pt", "artifact_model")
 
 # Saving the model as an MLmodel
 # Load environment
-with open('conda.yaml', 'r') as f:
+with open('conda.yml', 'r') as f:
     conda_env = yaml.safe_load(f)
 
 # Create signature
