@@ -11,12 +11,23 @@ import matplotlib.pyplot as plt
 import numpy as np
 from moviepy.editor import ImageSequenceClip
 
+import yaml
+
+import mlflow
+from mlflow.models.signature import ModelSignature
+from mlflow.types.schema import Schema, TensorSpec
+
 ENV_NAME = "CartPole-v1"
 
 env = gym.make(ENV_NAME).unwrapped
 
 N_ACTIONS = env.action_space.n
 STATE_SHAPE = env.observation_space.sample().shape
+
+# Tag Logging (one at a time)
+mlflow.set_tag("Environment Name", ENV_NAME)
+mlflow.set_tag("Number of Actions", N_ACTIONS)
+mlflow.set_tag("State Shape", STATE_SHAPE)
 
 EPISODES = 1000 
 EPS_START = 0.9 
@@ -28,7 +39,21 @@ HIDDEN_LAYER = 164
 BATCH_SIZE = 64  
 MAX_STEPS = 1000
 
+# Parameter Logging (multiple at once)
+mlflow.log_params({
+    "Episodes": EPISODES,
+    "Epsilon Start": EPS_START,
+    "Epsilon End": EPS_END,
+    "Epsilon Decay": EPS_DECAY,
+    "Discount Factor": GAMMA,
+    "Learning Rate": LR,
+    "Batch Size": BATCH_SIZE,
+    "Max Steps Per Episode": MAX_STEPS
+})
+
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+mlflow.set_tag("Device", device)
 
 use_cuda = torch.cuda.is_available()
 FloatTensor = torch.cuda.FloatTensor if use_cuda else torch.FloatTensor
@@ -73,16 +98,6 @@ optimizer = optim.Adam(model.parameters(), LR)
 steps_done = 0
 ed = []
 
-def plot_durations(d):
-    plt.figure(2)
-    plt.clf()
-    plt.title('Training...')
-    plt.xlabel('Episode')
-    plt.ylabel('Duration')
-    plt.plot(d)
-
-    plt.savefig('episode_durations')
-
 def botPlay():
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     state = env.reset()
@@ -103,6 +118,9 @@ def botPlay():
     clip = ImageSequenceClip(frames, fps=20)
     clip.write_gif('CartPole.gif', fps=20)
 
+    # Log Artifact
+    mlflow.log_artifact(local_path='CartPole.gif', artifact_path='BotPlay')
+
 def select_action(state, train=True):
     global steps_done
     sample = random.random()
@@ -121,6 +139,7 @@ def select_action(state, train=True):
 def run_episode(episode, env):
     state = env.reset()
     steps = 0
+    ep_loss = 0
     while True:
         action = select_action(FloatTensor(np.array([state])))
         next_state, reward, done, _ = env.step(action.item())
@@ -142,13 +161,21 @@ def run_episode(episode, env):
                      FloatTensor(np.array([next_state])),
                      FloatTensor(np.array([reward]))))
 
-        learn()
+        step_loss = learn()
+
+        if step_loss is not None:
+            ep_loss += step_loss
 
         state = next_state
         steps += 1
 
         if done or steps >= MAX_STEPS:
             ed.append(steps)
+
+            # Logged metrics (time-series)
+            mlflow.log_metric("Episodic Loss", ep_loss / steps)
+            mlflow.log_metric("Episode Duration", steps)
+
             print("[Episode {:>5}]  steps: {:>5}".format(episode, steps))
             if sum(ed[-10:])/10 > 800:
                 return True
@@ -182,6 +209,8 @@ def learn():
     loss.backward()
     optimizer.step()
 
+    return loss.item()
+
 for e in range(EPISODES):
     complete = run_episode(e, env)
 
@@ -196,5 +225,28 @@ for e in range(EPISODES):
         for i in range(0, n):
             mp[i].data[:] = mcp[i].data[:]
 
-# plot_durations(ed)
+
+# Logging scalar metric
+mlflow.log_metric('Mean Duration', sum(ed)/len(ed))
+
 botPlay()
+
+# Save the model as an artifact
+torch.save(model, "model.pt")
+mlflow.log_artifact("model.pt", "artifact_model")
+
+# Saving the model as an MLmodel
+# Load environment
+with open('conda.yaml', 'r') as f:
+    conda_env = yaml.safe_load(f)
+
+# Create signature
+input_schema = Schema([TensorSpec(np.dtype(np.float32), (-1, *STATE_SHAPE))])
+output_schema = Schema([TensorSpec(np.dtype(np.float32), (-1, N_ACTIONS))])
+signature = ModelSignature(inputs=input_schema, outputs=output_schema)
+
+# Log Model as MLModel
+mlflow.pytorch.log_model(model, 'ml_model', conda_env, signature=signature)
+
+# Register Model
+mlflow.register_model(f'runs:/{mlflow.active_run().info.run_id}/ml_model', 'cartpole-dqn')
