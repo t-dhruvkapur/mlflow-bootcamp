@@ -1,0 +1,21 @@
+name: torchEnv
+channels:
+    - conda-forge
+    - anaconda
+    - pytorch
+dependencies:
+    - python=3.9
+    - pytorch
+    - torchvision
+    - torchaudio
+    - cudnn=8.1
+    - cudatoolkit=11.3
+    - swig
+    - pip
+    - matplotlib
+    - pip:
+        - gym
+        - gym[box2d]
+        - moviepy
+        - mlflow
+        - azureml-mlflow
